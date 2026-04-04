@@ -1,0 +1,429 @@
+openapi: 3.0.3
+info:
+  title: AdMetrics Campaign API
+  description: |
+    Production-ready REST API for managing advertising campaigns.
+    Includes JWT authentication, rate limiting, and real-time WebSocket alerts.
+  version: 1.0.0
+  contact:
+    name: AdMetrics Team
+
+servers:
+  - url: http://localhost:5000
+    description: Local Backend API
+  - url: http://localhost:4000
+    description: Local AI Microservice
+
+tags:
+  - name: Auth
+    description: JWT Authentication
+  - name: Campaigns
+    description: Campaign CRUD operations
+  - name: Alerts
+    description: Real-time alert rules and history
+  - name: AI Generate
+    description: AI-powered content generation (AI Service)
+  - name: Health
+    description: Service health checks
+
+# ----------------------------------------------------------------
+# Security Scheme
+# ----------------------------------------------------------------
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Campaign:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        user_id:     { type: string, format: uuid }
+        name:        { type: string, example: "Summer Sale 2025" }
+        status:
+          type: string
+          enum: [draft, active, paused, completed]
+        platform:
+          type: string
+          enum: [Google Ads, Meta, LinkedIn, TikTok]
+        budget:      { type: number, example: 5000.00 }
+        spent:       { type: number, example: 1200.00 }
+        impressions: { type: integer, example: 120000 }
+        clicks:      { type: integer, example: 3600 }
+        conversions: { type: integer, example: 180 }
+        ctr:         { type: number, example: 3.0, description: "Auto-computed: clicks/impressions * 100" }
+        start_date:  { type: string, format: date, example: "2025-06-01" }
+        end_date:    { type: string, format: date, example: "2025-08-31" }
+        created_at:  { type: string, format: date-time }
+        updated_at:  { type: string, format: date-time }
+        deleted_at:  { type: string, format: date-time, nullable: true }
+
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string }
+
+    Pagination:
+      type: object
+      properties:
+        total:       { type: integer }
+        page:        { type: integer }
+        limit:       { type: integer }
+        totalPages:  { type: integer }
+        hasNextPage: { type: boolean }
+        hasPrevPage: { type: boolean }
+
+# ----------------------------------------------------------------
+# Paths
+# ----------------------------------------------------------------
+paths:
+
+  # ── Auth ───────────────────────────────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and receive JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, format: email, example: "admin@admetrics.com" }
+                password: { type: string, example: "Admin@1234" }
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+                      user:  { type: object }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user info
+        '401':
+          description: Unauthorized
+
+  # ── Campaigns ──────────────────────────────────────────────
+  /campaigns:
+    get:
+      tags: [Campaigns]
+      summary: List all campaigns (paginated, filterable, sortable)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 10, maximum: 100 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [draft, active, paused, completed] }
+        - in: query
+          name: platform
+          schema: { type: string, enum: [Google Ads, Meta, LinkedIn, TikTok] }
+        - in: query
+          name: search
+          schema: { type: string, description: "Search by campaign name" }
+        - in: query
+          name: sortBy
+          schema: { type: string, enum: [name, budget, spent, created_at, status], default: created_at }
+        - in: query
+          name: sortOrder
+          schema: { type: string, enum: [ASC, DESC], default: DESC }
+      responses:
+        '200':
+          description: Campaign list with pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      campaigns:
+                        type: array
+                        items: { $ref: '#/components/schemas/Campaign' }
+                      pagination: { $ref: '#/components/schemas/Pagination' }
+
+    post:
+      tags: [Campaigns]
+      summary: Create a new campaign
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, platform]
+              properties:
+                name:        { type: string, example: "Summer Sale 2025" }
+                status:      { type: string, enum: [draft, active, paused, completed], default: draft }
+                platform:    { type: string, enum: [Google Ads, Meta, LinkedIn, TikTok] }
+                budget:      { type: number, example: 5000 }
+                spent:       { type: number, example: 0 }
+                impressions: { type: integer, example: 0 }
+                clicks:      { type: integer, example: 0 }
+                conversions: { type: integer, example: 0 }
+                start_date:  { type: string, format: date }
+                end_date:    { type: string, format: date }
+      responses:
+        '201':
+          description: Campaign created
+        '422':
+          description: Validation error
+
+  /campaigns/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [Campaigns]
+      summary: Get single campaign with full metrics
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Campaign detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      campaign: { $ref: '#/components/schemas/Campaign' }
+        '404':
+          description: Campaign not found
+
+    put:
+      tags: [Campaigns]
+      summary: Update a campaign
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:        { type: string }
+                status:      { type: string, enum: [draft, active, paused, completed] }
+                platform:    { type: string, enum: [Google Ads, Meta, LinkedIn, TikTok] }
+                budget:      { type: number }
+                spent:       { type: number }
+                impressions: { type: integer }
+                clicks:      { type: integer }
+                conversions: { type: integer }
+                start_date:  { type: string, format: date }
+                end_date:    { type: string, format: date }
+      responses:
+        '200':
+          description: Campaign updated
+        '404':
+          description: Not found
+
+    delete:
+      tags: [Campaigns]
+      summary: Soft delete a campaign (sets deleted_at)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Campaign deleted (soft)
+        '404':
+          description: Not found
+
+  /campaigns/{id}/alert-rules:
+    post:
+      tags: [Alerts]
+      summary: Create alert rule for a campaign
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metric, condition, threshold]
+              properties:
+                metric:    { type: string, enum: [ctr, budget_spent_pct] }
+                condition: { type: string, enum: [below, above] }
+                threshold: { type: number, example: 1.0 }
+      responses:
+        '201':
+          description: Alert rule created
+
+  /alerts/history:
+    get:
+      tags: [Alerts]
+      summary: Get notification/alert history
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Alert history list
+
+  /alerts/history/{id}/read:
+    patch:
+      tags: [Alerts]
+      summary: Mark alert as read
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Marked as read
+
+  # ── Health ─────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Backend health check
+      responses:
+        '200':
+          description: Service is healthy
+
+  # ── AI Service (port 4000) ──────────────────────────────────
+  /generate/copy:
+    post:
+      tags: [AI Generate]
+      summary: Generate ad headline, body, and CTA
+      description: |
+        Supports both JSON response and SSE streaming.
+        For streaming: set `Accept: text/event-stream` header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product]
+              properties:
+                product:    { type: string, example: "Running Shoes" }
+                tone:       { type: string, example: "energetic" }
+                platform:   { type: string, example: "Instagram" }
+                word_limit: { type: integer, example: 50 }
+      responses:
+        '200':
+          description: Generated ad copy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      headline: { type: string }
+                      body:     { type: string }
+                      cta:      { type: string }
+
+  /generate/social:
+    post:
+      tags: [AI Generate]
+      summary: Generate 5 social media captions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                platform:      { type: string, example: "Instagram" }
+                campaign_goal: { type: string, example: "drive website traffic" }
+                brand_voice:   { type: string, example: "witty and bold" }
+      responses:
+        '200':
+          description: 5 social captions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      captions:
+                        type: array
+                        items: { type: string }
+                        minItems: 5
+                        maxItems: 5
+
+  /generate/hashtags:
+    post:
+      tags: [AI Generate]
+      summary: Generate 10 relevant hashtags
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:  { type: string, example: "Summer fitness campaign for athletes" }
+                industry: { type: string, example: "fitness" }
+      responses:
+        '200':
+          description: 10 hashtags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      hashtags:
+                        type: array
+                        items: { type: string }
+                        minItems: 10
+                        maxItems: 10
